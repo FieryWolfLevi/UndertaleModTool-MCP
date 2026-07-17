@@ -38,7 +38,20 @@
     <ItemGroup>
         <ProjectReference Include="..\Underanalyzer\Underanalyzer\Underanalyzer.csproj" />
         <ProjectReference Include="..\UndertaleModLib\UndertaleModLib.csproj" />
+        <ProjectReference Include="..\UndertaleModMcp\UndertaleModMcp.csproj" />
     </ItemGroup>
+
+    <!-- Copy the MCP server assembly (and its dependencies) next to the main executable so the
+         in-app "MCP server" tab can launch it. -->
+    <Target Name="CopyMcpServerOutput" AfterTargets="Build">
+        <ItemGroup>
+            <_McpFiles Include="$(MSBuildThisFileDirectory)..\UndertaleModMcp\bin\$(Configuration)\net10.0\**\*.*" />
+        </ItemGroup>
+        <Copy SourceFiles="@(_McpFiles)"
+              DestinationFolder="$(OutDir)%(RecursiveDir)"
+              SkipUnchangedFiles="true"
+              Condition="'@(_McpFiles)' != ''" />
+    </Target>
     <ItemGroup>
         <BootstrapperPackage Include=".NETFramework,Version=v4.6.1">
             <Visible>False</Visible>

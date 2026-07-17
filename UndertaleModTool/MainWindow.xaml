@@ -114,6 +114,7 @@
                     <MenuItem Header="Generate o_ffset map" Click="MenuItem_OffsetMap_Click"/>
                     <Separator/>
                     <MenuItem Header="S_ettings" Command="Properties"/>
+                    <MenuItem Header="_MCP server" Click="MenuItem_McpServer_Click"/>
                     <MenuItem Header="_Close" Command="Close" InputGestureText="Ctrl+Q"/>
                 </local:MenuItemDark>
                 <local:MenuItemDark x:Name="RootScriptItem" Header="_Scripts" SubmenuOpened="RootMenuItem_SubmenuOpened">
@@ -778,6 +779,10 @@
                                 </DataTemplate>
                                 <DataTemplate DataType="{x:Type undertale:UndertaleParticleSystemEmitter}">
                                     <local:UndertaleParticleSystemEmitterEditor/>
+                                </DataTemplate>
+
+                                <DataTemplate DataType="{x:Type local:McpConfigViewModel}">
+                                    <local:McpConfigView/>
                                 </DataTemplate>
                             </ContentControl.Resources>
                         </ContentControl>

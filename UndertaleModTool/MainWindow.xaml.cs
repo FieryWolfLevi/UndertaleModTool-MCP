@@ -3097,6 +3097,11 @@ result in loss of work.");
             settings.ShowDialog();
         }
 
+        private void MenuItem_McpServer_Click(object sender, RoutedEventArgs e)
+        {
+            OpenInTab(new McpConfigViewModel(), false, "MCP server");
+        }
+
         private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
         {
             UpdateTree();

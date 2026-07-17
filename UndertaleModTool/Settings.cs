@@ -57,6 +57,16 @@ namespace UndertaleModTool
 
         public bool RecompileAllCodeSourcesOnProjectSave { get; set; } = false;
 
+        /// <summary>
+        /// TCP port the in-app MCP HTTP server listens on when started from the MCP config tab.
+        /// </summary>
+        public int McpPort { get; set; } = 8401;
+
+        /// <summary>
+        /// Whether the MCP HTTP server should be started automatically when the app launches.
+        /// </summary>
+        public bool McpAutoStart { get; set; } = false;
+
         public static Settings Instance { get; private set; }
 
         public static JsonSerializerOptions JsonOptions = new()
