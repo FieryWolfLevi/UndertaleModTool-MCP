@@ -37,8 +37,28 @@ public static class Program
     internal static UndertaleData _data;
     internal static string _dataFilePath;
 
+    // Hard cap on any single tool response. Large responses (e.g. SearchCode
+    // over the whole game, or GetAllScripts) can exceed the MCP client's stdio
+    // message-size limit and cause the client to abruptly close the connection
+    // ("Connection closed"). Truncating keeps the JSON-RPC stream alive.
+    internal const int MaxResponseChars = 120_000;
+
     public static int Main(string[] args)
     {
+        // Install global handlers so that ANY failure (including a broken stdio
+        // pipe / transport error that the SDK surfaces outside the request path)
+        // is logged to mcp_crash.txt instead of killing the process silently
+        // with a bare "Connection closed".
+        AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+            WriteCrash("AppDomain.UnhandledException", e.ExceptionObject as Exception);
+        TaskScheduler.UnobservedTaskException += (s, e) =>
+            WriteCrash("TaskScheduler.UnobservedTaskException", e.Exception);
+        Console.CancelKeyPress += (s, e) =>
+        {
+            // Ctrl-C / client disconnect: don't let it tear down mid-write.
+            e.Cancel = true;
+        };
+
         try
         {
             // Determine the data file path. Can be supplied as the first argument,
@@ -57,14 +77,36 @@ public static class Program
         {
             // Write to a file (NEVER stdout - that would corrupt the MCP
             // JSON-RPC stream and cause the client to report "Connection closed").
-            try
-            {
-                string dir = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule?.FileName) ?? ".";
-                File.WriteAllText(Path.Combine(dir, "mcp_crash.txt"), e.ToString());
-            }
-            catch { }
+            WriteCrash("Main catch", e);
             return 1;
         }
+    }
+
+    /// <summary>
+    /// Writes a crash report to mcp_crash.txt next to the executable. Never
+    /// writes to stdout (that would corrupt the JSON-RPC stream).
+    /// </summary>
+    private static void WriteCrash(string where, Exception e)
+    {
+        try
+        {
+            string dir = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule?.FileName) ?? ".";
+            File.AppendAllText(Path.Combine(dir, "mcp_crash.txt"),
+                $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {where}:\n{e}\n\n");
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// Caps a tool's text response so it can never grow large enough to make the
+    /// MCP client close the stdio connection. Appends a notice when truncated.
+    /// </summary>
+    internal static string CapResponse(string text)
+    {
+        if (text == null) return string.Empty;
+        if (text.Length <= MaxResponseChars) return text;
+        return text.Substring(0, MaxResponseChars)
+            + $"\n\n[... response truncated at {MaxResponseChars} chars to avoid exceeding the MCP stdio message-size limit. Use more specific queries (FindScripts/SearchCode with a smaller maxResults) to read the rest. ...]";
     }
 
     #region MCP server hosting
@@ -107,7 +149,7 @@ public static class Program
         public string ListScripts() => ToolListScripts();
 
         [McpServerTool, Description("Read and decompile a GML code entry (script, object event, or global script) by its name into human-readable GML source.")]
-        public string ReadScript(string name) => ToolReadScript(name);
+        public string ReadScript(string name) => CapResponse(ToolReadScript(name));
 
         [McpServerTool, Description("Replace (or create) a GML code entry by name with the provided GML source. The GML is compiled and written back into the loaded data file. Supports script names, object event names, and global script names. Call save_data_file afterwards to persist.")]
         public string WriteScript(string name, string gml) => ToolWriteScript(name, gml);
@@ -116,19 +158,19 @@ public static class Program
         public string ListRooms() => ToolListRooms();
 
         [McpServerTool, Description("Read the tilemap layers of a room. Returns each tile layer's name, dimensions (in tiles), the background/tileset it uses, and a 2D grid (rows x columns) of tile indices. A tile index of 0 typically means empty.")]
-        public string ReadRoomTilemaps(string room) => ToolReadRoomTilemaps(room);
+        public string ReadRoomTilemaps(string room) => CapResponse(ToolReadRoomTilemaps(room));
 
         [McpServerTool, Description("Write a 2D grid (rows x columns) of tile indices into a specific tile layer of a room. The grid replaces the layer's existing tile data. Tileset/background assignment is not changed. Call save_data_file afterwards to persist.")]
         public string WriteRoomTilemap(string room, string layer, int[][] tileData) => ToolWriteRoomTilemap(room, layer, tileData);
 
         [McpServerTool, Description("Decompile and return the GML source of ALL code entries (scripts, object events, global scripts) in the game as a single concatenated text block, separated by headers. Useful for bulk analysis or search. Can be large.")]
-        public string GetAllScripts(bool includeAnonymous = false) => ToolGetAllScripts(includeAnonymous);
+        public string GetAllScripts(bool includeAnonymous = false) => CapResponse(ToolGetAllScripts(includeAnonymous));
 
         [McpServerTool, Description("Return the names of all code entries whose name contains the given substring (case-insensitive). Use this to discover script/event names before reading or writing them.")]
         public string FindScripts(string contains) => ToolFindScripts(contains);
 
         [McpServerTool, Description("Search the decompiled GML of all code entries for a substring (case-insensitive). Returns each matching code entry name and the matching line(s). Useful for finding where a variable, function, or string is used.")]
-        public string SearchCode(string query, int maxResults = 50) => ToolSearchCode(query, maxResults);
+        public string SearchCode(string query, int maxResults = 50) => CapResponse(ToolSearchCode(query, maxResults));
 
         [McpServerTool, Description("Return a summary of ALL rooms: name, index, size, and the names of their tile layers and background layers. Use this to discover room/layer names before reading or writing tilemaps.")]
         public string GetAllRooms() => ToolGetAllRooms();
@@ -153,6 +195,15 @@ public static class Program
 
         [McpServerTool, Description("List all sprites (name and index).")]
         public string ListSprites() => ToolListSprites();
+
+        [McpServerTool, Description("List every placed instance (game object) in a room: its object name, x, y, scaleX, scaleY, and the object definition's solid/visible flags. Use this to inspect collision geometry (where obj_solidparent walls are) and find mis-placed interactables / seams pre-Toriel. Call after load_data_file.")]
+        public string GetRoomObjects(string room) => CapResponse(ToolGetRoomObjects(room));
+
+        [McpServerTool, Description("Set the base Sprite of a single game object by name (or numeric index). The sprite is resolved by name from the sprite list. Use to repoint an NPC to a different appearance, e.g. spr_sans_d. Call save_data_file afterwards to persist.")]
+        public string SetObjectSprite(string objectName, string spriteName) => ToolSetObjectSprite(objectName, spriteName);
+
+        [McpServerTool, Description("Set the base Sprite of many game objects at once. objectNames is a comma-separated list of object names (or indices). All are repointed to spriteName. Use to make a curated set of NPCs look like Sans (spr_sans_d). Call save_data_file afterwards to persist.")]
+        public string SetSpritesForObjects(string objectNames, string spriteName) => ToolSetSpritesForObjects(objectNames, spriteName);
     }
 
     #endregion
@@ -687,6 +738,97 @@ public static class Program
         return result.ToString(Formatting.Indented);
     }
 
+    private static string ToolSetObjectSprite(string objectName, string spriteName)
+    {
+        EnsureLoaded();
+        if (string.IsNullOrWhiteSpace(objectName))
+            throw new Exception("Missing 'objectName' argument.");
+        if (string.IsNullOrWhiteSpace(spriteName))
+            throw new Exception("Missing 'spriteName' argument.");
+
+        UndertaleGameObject obj = _data.GameObjects.ByName(objectName);
+        if (obj == null && int.TryParse(objectName, out int oi) && oi >= 0 && oi < _data.GameObjects.Count)
+            obj = _data.GameObjects[oi];
+        if (obj == null)
+            throw new Exception($"No object named '{objectName}'.");
+
+        UndertaleSprite spr = FindSprite(spriteName);
+        if (spr == null)
+            throw new Exception($"No sprite named '{spriteName}'.");
+
+        obj.Sprite = spr;
+        return $"Set sprite of '{obj.Name?.Content}' to '{spriteName}'.";
+    }
+
+    private static string ToolSetSpritesForObjects(string objectNames, string spriteName)
+    {
+        EnsureLoaded();
+        if (string.IsNullOrWhiteSpace(objectNames))
+            throw new Exception("Missing 'objectNames' argument.");
+        if (string.IsNullOrWhiteSpace(spriteName))
+            throw new Exception("Missing 'spriteName' argument.");
+
+        UndertaleSprite spr = FindSprite(spriteName);
+        if (spr == null)
+            throw new Exception($"No sprite named '{spriteName}'.");
+
+        var names = objectNames.Split(',')
+            .Select(s => s.Trim())
+            .Where(s => s.Length > 0);
+        int ok = 0, fail = 0;
+        var failed = new StringBuilder();
+        foreach (var nm in names)
+        {
+            UndertaleGameObject obj = _data.GameObjects.ByName(nm);
+            if (obj == null && int.TryParse(nm, out int oi) && oi >= 0 && oi < _data.GameObjects.Count)
+                obj = _data.GameObjects[oi];
+            if (obj == null)
+            {
+                fail++;
+                failed.AppendLine(nm);
+                continue;
+            }
+            obj.Sprite = spr;
+            ok++;
+        }
+        string result = $"Repointed {ok} object(s) to '{spriteName}'.";
+        if (fail > 0)
+            result += $" Could not find {fail} object(s):\n{failed}";
+        return result;
+    }
+
+    private static string ToolGetRoomObjects(string roomName)
+    {
+        EnsureLoaded();
+        UndertaleRoom room = FindRoom(roomName);
+
+        var instances = new JArray();
+        foreach (var go in room.GameObjects)
+        {
+            var objDef = go.ObjectDefinition;
+            instances.Add(new JObject
+            {
+                ["object"] = objDef?.Name?.Content,
+                ["x"] = go.X,
+                ["y"] = go.Y,
+                ["scaleX"] = go.ScaleX,
+                ["scaleY"] = go.ScaleY,
+                ["solid"] = objDef?.Solid ?? false,
+                ["visible"] = objDef?.Visible ?? false,
+                ["instanceId"] = go.InstanceID
+            });
+        }
+        var result = new JObject
+        {
+            ["room"] = room.Name?.Content,
+            ["roomWidth"] = room.Width,
+            ["roomHeight"] = room.Height,
+            ["count"] = instances.Count,
+            ["instances"] = instances
+        };
+        return result.ToString(Formatting.Indented);
+    }
+
     #endregion
 
     #region Helpers
@@ -728,6 +870,18 @@ public static class Program
         if (room == null)
             throw new Exception($"No room named '{roomName}'.");
         return room;
+    }
+
+    private static UndertaleSprite FindSprite(string spriteName)
+    {
+        if (string.IsNullOrWhiteSpace(spriteName))
+            return null;
+        if (int.TryParse(spriteName, out int idx) && idx >= 0 && idx < _data.Sprites.Count)
+            return _data.Sprites[idx];
+        foreach (var s in _data.Sprites)
+            if (string.Equals(s.Name?.Content, spriteName, StringComparison.OrdinalIgnoreCase))
+                return s;
+        return null;
     }
 
     #endregion
