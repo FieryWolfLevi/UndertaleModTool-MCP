@@ -202,8 +202,11 @@ public static class Program
         [McpServerTool, Description("Set the base Sprite of a single game object by name (or numeric index). The sprite is resolved by name from the sprite list. Use to repoint an NPC to a different appearance, e.g. spr_sans_d. Call save_data_file afterwards to persist.")]
         public string SetObjectSprite(string objectName, string spriteName) => ToolSetObjectSprite(objectName, spriteName);
 
-        [McpServerTool, Description("Set the base Sprite of many game objects at once. objectNames is a comma-separated list of object names (or indices). All are repointed to spriteName. Use to make a curated set of NPCs look like Sans (spr_sans_d). Call save_data_file afterwards to persist.")]
-        public string SetSpritesForObjects(string objectNames, string spriteName) => ToolSetSpritesForObjects(objectNames, spriteName);
+        [McpServerTool, Description("Set the text of a single string-table entry by its key (the name used by scr_gettext, e.g. 'obj_papyrus1_407' or 'SCR_TEXT_1807'). This is how in-game dialogue is stored. Call save_data_file afterwards to persist.")]
+        public string SetString(string key, string value) => ToolSetString(key, value);
+
+        [McpServerTool, Description("Bulk-set string-table entries from a JSON object mapping key -> value (e.g. {\"obj_papyrus1_407\":\"heh.\",\"SCR_TEXT_1807\":\"wanna hear about my brother?\"}). This rewrites in-game dialogue. Call save_data_file afterwards to persist.")]
+        public string SetStrings(string json) => ToolSetStrings(json);
     }
 
     #endregion
@@ -829,6 +832,57 @@ public static class Program
         return result.ToString(Formatting.Indented);
     }
 
+    private static string ToolSetString(string key, string value)
+    {
+        EnsureLoaded();
+        if (string.IsNullOrWhiteSpace(key))
+            throw new Exception("Missing 'key' argument.");
+        if (value == null)
+            throw new Exception("Missing 'value' argument.");
+
+        UndertaleString s = FindString(key);
+        if (s == null)
+            throw new Exception($"No string-table entry named '{key}'.");
+        s.Content = value;
+        return $"Set string '{key}' to: {value}";
+    }
+
+    private static string ToolSetStrings(string json)
+    {
+        EnsureLoaded();
+        if (string.IsNullOrWhiteSpace(json))
+            throw new Exception("Missing 'json' argument.");
+
+        JObject map;
+        try
+        {
+            map = JObject.Parse(json);
+        }
+        catch (Exception e)
+        {
+            throw new Exception("Invalid JSON object: " + e.Message);
+        }
+
+        int ok = 0, fail = 0;
+        var failed = new StringBuilder();
+        foreach (var prop in map.Properties())
+        {
+            UndertaleString s = FindString(prop.Name);
+            if (s == null)
+            {
+                fail++;
+                failed.AppendLine(prop.Name);
+                continue;
+            }
+            s.Content = prop.Value?.ToString();
+            ok++;
+        }
+        string result = $"Set {ok} string(s).";
+        if (fail > 0)
+            result += $" Could not find {fail} key(s):\n{failed}";
+        return result;
+    }
+
     #endregion
 
     #region Helpers
@@ -881,6 +935,22 @@ public static class Program
         foreach (var s in _data.Sprites)
             if (string.Equals(s.Name?.Content, spriteName, StringComparison.OrdinalIgnoreCase))
                 return s;
+        return null;
+    }
+
+    private static UndertaleString FindString(string key)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+            return null;
+        // Undertale's string table stores entries as interleaved key/value pairs:
+        // Strings[2k].Content is the scr_gettext key, Strings[2k+1].Content is the
+        // dialogue text. scr_gettext(key) returns the entry immediately after the
+        // matching key. So we find the key entry and return the NEXT entry (the value).
+        for (int i = 0; i < _data.Strings.Count; i++)
+        {
+            if (string.Equals(_data.Strings[i].Content, key, StringComparison.OrdinalIgnoreCase))
+                return _data.Strings[Math.Min(i + 1, _data.Strings.Count - 1)];
+        }
         return null;
     }
 
